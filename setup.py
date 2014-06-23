@@ -15,5 +15,6 @@ setup(name='imago',
       install_requires=[
           'pyelasticsearch>=0.6',
           'Django>=1.6',
+          'opencivicdata',
           'represent-boundaries>=0.1',
       ])

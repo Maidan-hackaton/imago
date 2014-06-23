@@ -8,10 +8,9 @@ from django.shortcuts import redirect
 from django.core.serializers.json import DateTimeAwareJSONEncoder
 from django.core.urlresolvers import reverse
 from django.db.models import Q
-from .core import db
 from .exceptions import APIError
 from .utils import dict_to_mongo_query, bill_search
-from .models import Division
+from opencivicdata.models import Division, Person, Organization, Bill, Jurisdiction, Event, VoteEvent
 
 
 def _clamp(val, _min, _max):
@@ -60,12 +59,9 @@ class JsonView(View):
     """
 
     default_fields = None
-    per_page = 100
+    per_page = 200
     query_params = {}
     sort_options = {
-        'default': [('created_at', pymongo.DESCENDING)],
-        'created_at': [('created_at', pymongo.DESCENDING)],
-        'updated_at': [('updated_at', pymongo.DESCENDING)]
     }
     default_subfields = None
 
@@ -73,10 +69,10 @@ class JsonView(View):
         get_params = request.GET.copy()
 
         try:
-            if locksmith_db and (not hasattr(request, 'apikey') or
-                                 request.apikey['status'] != 'A'):
-                raise APIError('Authorization Required: obtain API key at ' +
-                               settings.LOCKSMITH_REGISTRATION_URL, status=401)
+        #    if locksmith_db and (not hasattr(request, 'apikey') or
+        #                         request.apikey['status'] != 'A'):
+        #        raise APIError('Authorization Required: obtain API key at ' +
+        #                       settings.LOCKSMITH_REGISTRATION_URL, status=401)
             data = self.get_data(get_params, *args, **kwargs)
         except APIError as e:
             resp = {'error': str(e)}
@@ -94,32 +90,30 @@ class JsonView(View):
         if cb:
             data = '{0}({1})'.format(cb, data)
 
-        if locksmith_db:
-            locksmith_db.logs.insert({'key': request.apikey['_id'],
-                                      'method': self.__class__.__name__,
-                                      'query_string': request.META['QUERY_STRING'],
-                                      'timestamp': datetime.datetime.utcnow()})
+#        if locksmith_db:
+#            locksmith_db.logs.insert({'key': request.apikey['_id'],
+#                                      'method': self.__class__.__name__,
+#                                      'query_string': request.META['QUERY_STRING'],
+#                                      'timestamp': datetime.datetime.utcnow()})
 
         return HttpResponse(data, content_type='application/json; charset=utf-8')
 
     def get_page(self, data, page, per_page):
-        """ return a single page - Mongo specific """
-        return list(data.skip(page * per_page).limit(per_page))
+        # TODO proper postgres paging
+        return list(data[page * per_page:(page+1) * per_page])
 
     def do_query(self, get_params):
         """ return data, count, extra_meta """
         fields = self.fields_from_request(get_params)
         query = self.query_from_request(get_params)
         sort = self.sort_options.get(get_params.get('sort', 'default'))
-        data = self.collection.find(query, fields=fields)
-        if sort:
-            data = data.sort(sort)
-            return data, data.count(), {'mongo':
-                                        {'sort': sort, 'fields': fields, 'query': query}
-                                       }
+        data = self.table.objects.order_by('name').values(*fields).all()
+        # TODO postgres filtering
+        #filter(query)
+        return data, len(data)
 
     def get_data(self, get_params):
-        data, total, extra_meta = self.do_query(get_params)
+        data, total = self.do_query(get_params)
 
         try:
             per_page = _clamp(
@@ -143,11 +137,6 @@ class JsonView(View):
                                           'max_page': int(total / per_page),
                                          }
                }
-
-        # debug stuff into meta
-        if 'debug' in get_params:
-            data['meta'].update(extra_meta)
-
         return data
 
     def fields_from_request(self, get_params):
@@ -156,9 +145,9 @@ class JsonView(View):
         if not fields:
             return self.default_fields
         else:
-            d = {field: 1 for field in fields.split(',')}
-            d['_id'] = d.pop('id', 1)
-            d['_type'] = 1
+            d = [field for field in fields.split(',')]
+            if 'id' not in d:
+                d.append('id')
             return d
 
     def query_from_request(self, get_params):
@@ -195,11 +184,11 @@ class DetailView(JsonView):
 
 
 class JurisdictionDetail(DetailView):
-    collection = db.jurisdictions
+    table = Jurisdiction
 
 
 class OrganizationDetail(DetailView):
-    collection = db.organizations
+    table = Organization
 
     def get_data(self, *args, **kwargs):
         data = super(OrganizationDetail, self).get_data(*args, **kwargs)
@@ -219,7 +208,7 @@ class OrganizationDetail(DetailView):
 
 
 class PersonDetail(DetailView):
-    collection = db.people
+    table = Person
 
     def get_data(self, *args, **kwargs):
         data = super(PersonDetail, self).get_data(*args, **kwargs)
@@ -240,7 +229,7 @@ class PersonDetail(DetailView):
 
 
 class BillDetail(DetailView):
-    collection = db.bills
+    table = Bill
 
     def get_data(self, *args, **kwargs):
         data = super(BillDetail, self).get_data(*args, **kwargs)
@@ -249,24 +238,25 @@ class BillDetail(DetailView):
 
 
 class EventDetail(DetailView):
-    collection = db.events
+    table = Event
 
 
 class VoteDetail(DetailView):
-    collection = db.votes
+    table = VoteEvent
 
 
 class JurisdictionList(JsonView):
-    collection = db.jurisdictions
+    table = Jurisdiction
+
     default_fields = {'terms': 0, 'session_details': 0, 'chambers': 0}
     sort_options = {
-        'default': [('name', pymongo.ASCENDING)]
+        'default': ('name',)
     }
 
 
 class OrganizationList(JsonView):
-    collection = db.organizations
-    default_fields = {'contact_details': 0, 'sources': 0, 'posts': 0,
+    table = Organization
+    default_ = {'contact_details': 0, 'sources': 0, 'posts': 0,
                       'founding_date': 0, 'dissolution_date': 0}
     query_params = {'classification': None,
                     'founding_date': None,
@@ -281,7 +271,7 @@ class OrganizationList(JsonView):
 
 
 class PeopleList(JsonView):
-    collection = db.people
+    table = Person
     default_fields = {'contact_details': 0, 'sources': 0, 'extras': 0,
                       'links': 0, 'birth_date': 0, 'death_date': 0}
     query_params = {'name': fuzzy_string_param,
@@ -321,7 +311,7 @@ class PeopleList(JsonView):
 
 
 class BillList(JsonView):
-    collection = db.bills
+    table = Bill
     default_fields = {'sponsors': 0, 'sources': 0, 'actions': 0,
                       'links': 0, 'versions': 0, 'related_bills': 0,
                       'summaries': 0, 'other_titles': 0, 'documents': 0
@@ -353,7 +343,7 @@ class BillList(JsonView):
 
 
 class EventList(JsonView):
-    collection = db.events
+    table = Event
     default_fields = {'sources': 0}
     query_params = {'jurisdiction_id': None,
                     'participants.id': None,
@@ -363,15 +353,11 @@ class EventList(JsonView):
                     'updated_at': time_param,
                    }
     sort_options = {
-        'default': [('created_at', pymongo.DESCENDING)],
-        'created_at': [('created_at', pymongo.DESCENDING)],
-        'updated_at': [('updated_at', pymongo.DESCENDING)],
-        'when': [('when', pymongo.DESCENDING)],
     }
 
 
 class VoteList(JsonView):
-    collection = db.votes
+    table = VoteEvent
     default_fields = {'roll_call': 0, 'sources': 0}
     query_params = {'jurisdiction_id': None,
                     'date': None,
@@ -383,10 +369,6 @@ class VoteList(JsonView):
                     'created_at': time_param,
                     'updated_at': time_param}
     sort_options = {
-        'default': [('created_at', pymongo.DESCENDING)],
-        'created_at': [('created_at', pymongo.DESCENDING)],
-        'updated_at': [('updated_at', pymongo.DESCENDING)],
-        'date': [('date', pymongo.DESCENDING)],
     }
 
 

@@ -1,6 +1,7 @@
-Django
+-e git+https://github.com/django/django.git@stable/1.7.x#egg=django
 psycopg2
 pyelasticsearch
 django-appconf
 south
 -e git://github.com/jamesturk/represent-boundaries.git#egg=boundaries
+opencivicdata
